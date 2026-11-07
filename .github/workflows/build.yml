@@ -1,11 +1,11 @@
-name: Build GamePulse v0.2 APK from ZIP
+name: Build GamePulse v0.3 APK from ZIP
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - 'GamePulse-v0.2-source.zip'
+      - 'GamePulse-v0.3-source.zip'
       - '.github/workflows/build.yml'
 
 permissions:
@@ -14,42 +14,40 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Java 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Extract ZIP safely on runner
+      - name: Extract GamePulse ZIP automatically
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, pathlib, zipfile
-          source = pathlib.Path('GamePulse-v0.2-source.zip')
-          if not source.is_file(): raise SystemExit('Missing GamePulse-v0.2-source.zip at repository root')
-          dest = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'gamepulse-src').resolve()
-          dest.mkdir(parents=True, exist_ok=True)
-          with zipfile.ZipFile(source) as z:
+          import os, pathlib, stat, zipfile
+          archive = pathlib.Path('GamePulse-v0.3-source.zip')
+          if not archive.is_file():
+              raise SystemExit('Missing GamePulse-v0.3-source.zip in repository root (Code tab, main branch). Upload the SOURCE ZIP, not the workflow TXT/ZIP.')
+          destination = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'gamepulse-project').resolve()
+          destination.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive) as z:
               bad = z.testzip()
-              if bad: raise SystemExit('Corrupt ZIP member: ' + bad)
-              for entry in z.infolist():
-                  target = (dest / entry.filename).resolve()
-                  if not target.is_relative_to(dest): raise SystemExit('Unsafe ZIP path: ' + entry.filename)
-                  if (entry.external_attr >> 16) & 0o170000 == 0o120000: raise SystemExit('Symlink not allowed')
-              z.extractall(dest)
-          project = dest / 'GamePulse-v0.2'
-          if not (project / 'settings.gradle').is_file(): raise SystemExit('Missing settings.gradle in ZIP')
-          with open(os.environ['GITHUB_ENV'], 'a') as f: f.write('PROJECT_DIR=' + str(project) + '\n')
-          print('Project:', project)
+              if bad: raise SystemExit('Corrupt ZIP entry: '+bad)
+              for item in z.infolist():
+                  target = (destination / item.filename).resolve()
+                  if not target.is_relative_to(destination): raise SystemExit('Unsafe ZIP path: '+item.filename)
+                  if stat.S_ISLNK(item.external_attr >> 16): raise SystemExit('Symlink rejected: '+item.filename)
+              z.extractall(destination)
+          project = destination / 'GamePulse-v0.3'
+          if not (project / 'settings.gradle').is_file(): raise SystemExit('Missing GamePulse-v0.3/settings.gradle')
+          with open(os.environ['GITHUB_ENV'], 'a') as f: f.write('PROJECT_DIR='+str(project)+'\n')
+          print('Extracted project:',project)
           PY
-
-      - name: Use runner Android SDK
+      - name: Prepare runner Android SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -59,25 +57,21 @@ jobs:
           test -d "$SDK"
           if [ ! -f "$SDK/platforms/android-35/android.jar" ]; then
             SDKMANAGER="$(find "$SDK/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
-            test -n "$SDKMANAGER" || { echo 'sdkmanager not found'; exit 1; }
-            yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses >/dev/null || true
+            test -n "$SDKMANAGER" || { echo 'Android sdkmanager not found'; exit 1; }
             "$SDKMANAGER" --sdk_root="$SDK" 'platforms;android-35' 'build-tools;35.0.0'
           fi
           test -f "$SDK/platforms/android-35/android.jar"
-
-      - name: Install Gradle 8.9
+      - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-
-      - name: Compile APK
+      - name: Compile debug APK
         shell: bash
         run: gradle -p "$PROJECT_DIR" --no-daemon :app:assembleDebug --stacktrace
-
-      - name: Upload debug APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GamePulse-v0.2-debug-APK
+          name: GamePulse-v0.3-debug-APK
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
